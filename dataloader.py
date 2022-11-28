@@ -52,3 +52,5 @@ class DataLoader(object):
         # Load train and test dataset with samplers
         self.trainloader = torch.utils.data.DataLoader(self.dataset, batch_size = 4, sampler = train_sampler)
         self.testloader = torch.utils.data.DataLoader(self.dataset, batch_size = 4, sampler = test_sampler)
+
+        print("Dataloader has finished initializing")
