@@ -10,7 +10,7 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
 
-from utils import displayImageDimensions
+from utils import *
 from dataloader import DataLoader
 from net import Net
 
