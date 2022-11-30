@@ -13,12 +13,6 @@ import torch.optim as optim
 dataset_loc = ""
 
 def testtrain_acc(x):
-  dataiter = iter(x)
-  images, labels = dataiter.next()
-  outputs = net(images)
-
-  _, predicted = torch.max(outputs, 1)
-
   correct = 0
   total = 0
   with torch.no_grad():
