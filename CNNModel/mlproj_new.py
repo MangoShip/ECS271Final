@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-dataset_loc = "../datasets/Sohas_weapon-Classification"
+dataset_loc = ""
 
 def testtrain_acc(x, net, device):
   correct = 0
@@ -30,6 +30,7 @@ def testtrain_acc(x, net, device):
 transform = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(225),
+    transforms.ColorJitter(brightness = 0.5),
     transforms.ToTensor(),
     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
@@ -74,7 +75,7 @@ class Net(nn.Module):
         return x
 
 def main():
-    device = torch.device("cuda:0")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net = Net().to(device)
 
     criterion = nn.CrossEntropyLoss()
