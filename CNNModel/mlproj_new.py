@@ -80,7 +80,7 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
 
-    for epoch in range(50):  # loop over the dataset multiple times
+    for epoch in range(100):  # loop over the dataset multiple times
 
         print("Epoch #%d:" % epoch)
         
@@ -111,32 +111,32 @@ def main():
 
         # End timer
         train_timer_end = time.perf_counter()
-        print("Training Duration: %.3fs" % (train_timer_end - train_timer_start))
         
         train_acc_timer_start = time.perf_counter()
         train_acc.append(testtrain_acc(trainLoader, net, device))
         train_acc_timer_end = time.perf_counter()
-        print("Training Accuracy Duration: %.3fs" % (train_acc_timer_end - train_acc_timer_start))
 
         test_acc_timer_start = time.perf_counter()
         test_acc.append(testtrain_acc(testLoader, net, device))
         test_acc_timer_end = time.perf_counter()
-        print("Testing Accuracy Duration: %.3fs" % (test_acc_timer_end - test_acc_timer_start))
 
         loss_vals.append(running_loss / len(trainLoader))
 
         # End timer
         epoch_timer_end = time.perf_counter()
+        print("Training Duration: %.3fs" % (train_timer_end - train_timer_start))
+        print("Training Accuracy Duration: %.3fs" % (train_acc_timer_end - train_acc_timer_start))
+        print("Testing Accuracy Duration: %.3fs" % (test_acc_timer_end - test_acc_timer_start))
         print("Epoch Duration: %.3fs" % (epoch_timer_end - epoch_timer_start))
 
 
-    epochs = [i+1 for i in range(50)]
-    plt.plot(epochs, test_acc, marker="o")
-    plt.show()
-    plt.plot(epochs, train_acc, marker="o")
-    plt.show()
-    plt.plot(epochs, loss_vals, marker="o")
-    plt.show()
+    epochs = [i+1 for i in range(100)]
+    plt.plot(epochs, test_acc, marker="o", label="Test Accuracy")
+    plt.plot(epochs, train_acc, marker="o", label="Train Accuracy")
+    plt.plot(epochs, loss_vals, marker="o", label="Total Loss")
+    plt.legend()
+    plt.xLabel("Number of Epoch")
+    plt.savefig("test.png")
 
 if __name__ == '__main__':
     main()
