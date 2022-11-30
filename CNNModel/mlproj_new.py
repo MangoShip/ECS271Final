@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 from scipy.io import loadmat
 import matplotlib.pyplot as plt
@@ -10,14 +11,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-dataset_loc = ""
+dataset_loc = "../datasets/Sohas_weapon-Classification"
 
-def testtrain_acc(x):
+def testtrain_acc(x, net, device):
   correct = 0
   total = 0
   with torch.no_grad():
       for data in x:
           images, labels = data
+          images, labels = images.to(device), labels.to(device)
           outputs = net(images)
           _, predicted = torch.max(outputs.data, 1)
           total += labels.size(0)
@@ -71,40 +73,70 @@ class Net(nn.Module):
         x = self.fc5(x)
         return x
 
-net = Net()
+def main():
+    device = torch.device("cuda:0")
+    net = Net().to(device)
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
 
-for epoch in range(50):  # loop over the dataset multiple times
+    for epoch in range(50):  # loop over the dataset multiple times
 
-    running_loss = 0.0
-    for i, data in enumerate(trainLoader, 0):
-        # get the inputs
-        inputs, labels = data
-        # zero the parameter gradients
-        optimizer.zero_grad()
+        print("Epoch #%d:" % epoch)
+        
+        # Start timer
+        epoch_timer_start = time.perf_counter()
+        train_timer_start = time.perf_counter()
 
-        # forward + backward + optimize
-        outputs = net(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+        running_loss = 0.0
+        for i, data in enumerate(trainLoader, 0):
+            # get the inputs
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+            # zero the parameter gradients
+            optimizer.zero_grad()
 
-        # print statistics
-        running_loss += loss.item()
-        if i % 249 == 0:    # print every 2000 mini-batches
-            print('[%d, %5d] loss: %.3f' %
-                  (epoch + 1, i + 1, running_loss / 2000))
-            # running_loss = 0.0
-    train_acc.append(testtrain_acc(trainLoader))
-    test_acc.append(testtrain_acc(testLoader))
-    loss_vals.append(running_loss / len(trainLoader))
+            # forward + backward + optimize
+            outputs = net(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-epochs = [i+1 for i in range(50)]
-plt.plot(epochs, test_acc, marker="o")
-plt.show()
-plt.plot(epochs, train_acc, marker="o")
-plt.show()
-plt.plot(epochs, loss_vals, marker="o")
-plt.show()
+            # print statistics
+            running_loss += loss.item()
+            '''if i % 249 == 0:    # print every 2000 mini-batches
+                print('[%d, %5d] loss: %.3f' %
+                    (epoch + 1, i + 1, running_loss / 2000))
+                # running_loss = 0.0'''
+
+        # End timer
+        train_timer_end = time.perf_counter()
+        print("Training Duration: %.3fs" % (train_timer_end - train_timer_start))
+        
+        train_acc_timer_start = time.perf_counter()
+        train_acc.append(testtrain_acc(trainLoader, net, device))
+        train_acc_timer_end = time.perf_counter()
+        print("Training Accuracy Duration: %.3fs" % (train_acc_timer_end - train_acc_timer_start))
+
+        test_acc_timer_start = time.perf_counter()
+        test_acc.append(testtrain_acc(testLoader, net, device))
+        test_acc_timer_end = time.perf_counter()
+        print("Testing Accuracy Duration: %.3fs" % (test_acc_timer_end - test_acc_timer_start))
+
+        loss_vals.append(running_loss / len(trainLoader))
+
+        # End timer
+        epoch_timer_end = time.perf_counter()
+        print("Epoch Duration: %.3fs" % (epoch_timer_end - epoch_timer_start))
+
+
+    epochs = [i+1 for i in range(50)]
+    plt.plot(epochs, test_acc, marker="o")
+    plt.show()
+    plt.plot(epochs, train_acc, marker="o")
+    plt.show()
+    plt.plot(epochs, loss_vals, marker="o")
+    plt.show()
+
+if __name__ == '__main__':
+    main()
