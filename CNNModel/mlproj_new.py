@@ -14,11 +14,13 @@ import torch.distributed as dist
 
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import Subset
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torchmetrics import Metric
 
-dataset_loc = "../datasets/Sohas_weapon-Classification"
+#dataset_loc = "../datasets/Sohas_weapon-Classification"
+dataset_loc = "../balanced_datasets"
 
 # https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
 def ddp_setup(rank, world_size):
@@ -41,28 +43,63 @@ def testtrain_acc(x, net, device):
   return(100*correct/total)
 
 class DataLoader(object):
-    def __init__(self):
-        super(DataLoader, self).__init__()
+    def __init__(self, num_epoch):
+        super(DataLoader, self).__init__() 
 
         transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(225),
-            transforms.ColorJitter(brightness = 0.5),
+            #transforms.ColorJitter(brightness = 0.5),
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
         orig_dataset = torchvision.datasets.ImageFolder(root=dataset_loc, transform=transform)
+
         tot_samples = len(orig_dataset)
         samples_test = int(0.2 * tot_samples)
 
         # https://discuss.pytorch.org/t/using-imagefolder-random-split-with-multiple-transforms/79899
-        self.train, self.test = torch.utils.data.random_split(orig_dataset, [tot_samples - samples_test, samples_test])
-        self.trainLoader = torch.utils.data.DataLoader(self.train, batch_size=32, num_workers=2, shuffle=False, sampler=DistributedSampler(self.train))
-        self.testLoader = torch.utils.data.DataLoader(self.test, batch_size=32, num_workers=2, shuffle=False, sampler=DistributedSampler(self.test))
+        self.trainsets, self.testsets = torch.utils.data.random_split(orig_dataset, [tot_samples - samples_test, samples_test])
+        #self.trainLoader = torch.utils.data.DataLoader(self.train, batch_size=32, num_workers=2, shuffle=False, sampler=DistributedSampler(self.train))
+        #self.testLoader = torch.utils.data.DataLoader(self.test, batch_size=32, num_workers=2, shuffle=False, sampler=DistributedSampler(self.test))
 
-        self.train_acc = []
-        self.test_acc = []
-        self.loss_vals = []
+        self.train_acc = np.zeros(num_epoch)
+        self.test_acc = np.zeros(num_epoch)
+        self.loss_vals = np.zeros(num_epoch)
+
+        print("Finished initializing dataLoader")
+
+class DistributedDataLoader(object):
+    def __init__(self, trainsets, testsets, world_size, rank):
+        super(DistributedDataLoader, self).__init__()
+        self.train_subsets = trainsets
+        self.test_subsets = testsets
+
+        if world_size > 1:
+            train_subsize = len(trainsets) / world_size
+            test_subsize = len(testsets) / world_size
+
+            # Subdivide trainset
+            start_index = rank * train_subsize
+            end_index = start_index + train_subsize
+            if rank == world_size - 1:
+                end_index = len(trainsets)
+            indices = [*range(int(start_index), int(end_index))]
+            self.train_subsets = Subset(trainsets, indices)
+
+            # Subdivide testset
+            start_index = rank * test_subsize
+            end_index = start_index + test_subsize
+            if rank == world_size - 1:
+                end_index = len(testsets)
+            indices = [*range(int(start_index), int(end_index))]
+            self.test_subsets = Subset(testsets, indices)
+
+        # Load train and test dataset with samplers
+        self.trainLoader = torch.utils.data.DataLoader(self.train_subsets, batch_size = 32)
+        self.testLoader = torch.utils.data.DataLoader(self.test_subsets, batch_size = 32)
+
+        print("Finished initializing distributedDataLoader")
 
 class Net(nn.Module):
     def __init__(self):
@@ -106,36 +143,32 @@ class MetricLoss(Metric):
     def compute(self):
         return (torch.mean(self.loss)).item(), (torch.mean(self.train_accuracy)).item(), (torch.mean(self.test_accuracy)).item()
 
-def main(rank, world_size):
-    
+def main(rank, world_size, num_epoch, dataLoader):
     ddp_setup(rank, world_size)
     gpu_id = rank
 
     metric = MetricLoss()
+
+    distributedDataLoader = DistributedDataLoader(dataLoader.trainsets, dataLoader.testsets, world_size, gpu_id)
     
     net = Net()
     net.metric = metric
     net.to(gpu_id)
     net = DDP(net, device_ids=[gpu_id])
 
-    dataLoader = DataLoader()
-
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
-    epoch_num = 100
 
-    for epoch in range(epoch_num):  # loop over the dataset multiple times
+    for epoch in range(num_epoch):  # loop over the dataset multiple times
 
         print("Epoch #%d:" % epoch)
-        dataLoader.trainLoader.sampler.set_epoch(epoch)
-        dataLoader.testLoader.sampler.set_epoch(epoch)
-        
+
         # Start timer
         epoch_timer_start = time.perf_counter()
         train_timer_start = time.perf_counter()
 
         running_loss = 0.0
-        for i, data in enumerate(dataLoader.trainLoader, 0):
+        for i, data in enumerate(distributedDataLoader.trainLoader, 0):
             # get the inputs
             inputs, labels = data
             inputs, labels = inputs.to(gpu_id), labels.to(gpu_id)
@@ -157,16 +190,21 @@ def main(rank, world_size):
 
         # End timer
         train_timer_end = time.perf_counter()
-        
+
+        dist.barrier()
+
+        #print("Training Duration: %.3fs" % (train_timer_end - train_timer_start))
         train_acc_timer_start = time.perf_counter()
-        train_acc = testtrain_acc(dataLoader.trainLoader, net, gpu_id)
+        train_acc = testtrain_acc(distributedDataLoader.trainLoader, net, gpu_id)
         train_acc_timer_end = time.perf_counter()
+        #print("Training Accuracy Duration: %.3fs" % (train_acc_timer_end - train_acc_timer_start))
 
         test_acc_timer_start = time.perf_counter()
-        test_acc = testtrain_acc(dataLoader.testLoader, net, gpu_id)
+        test_acc = testtrain_acc(distributedDataLoader.testLoader, net, gpu_id)
         test_acc_timer_end = time.perf_counter()
+        #print("Testing Accuracy Duration: %.3fs" % (test_acc_timer_end - test_acc_timer_start))
 
-        metric(running_loss / len(dataLoader.trainLoader), train_acc, test_acc)
+        metric(running_loss / len(distributedDataLoader.trainLoader), train_acc, test_acc)
         total_loss, total_train_acc, total_test_acc = metric.compute()
         
         '''print("Individual Loss:", running_loss / len(dataLoader.trainLoader))
@@ -177,26 +215,24 @@ def main(rank, world_size):
         print("Metric Test Acc:", total_test_acc)'''
         metric.reset()
 
-        dataLoader.loss_vals.append(total_loss)
-        dataLoader.train_acc.append(total_train_acc)
-        dataLoader.test_acc.append(total_test_acc)
+        dataLoader.loss_vals[epoch] = (total_loss)
+        dataLoader.train_acc[epoch] = (total_train_acc)
+        dataLoader.test_acc[epoch] = (total_test_acc)
 
         # End timer
         epoch_timer_end = time.perf_counter()
-        '''print("Training Duration: %.3fs" % (train_timer_end - train_timer_start))
-        print("Training Accuracy Duration: %.3fs" % (train_acc_timer_end - train_acc_timer_start))
-        print("Testing Accuracy Duration: %.3fs" % (test_acc_timer_end - test_acc_timer_start))
-        print("Epoch Duration: %.3fs" % (epoch_timer_end - epoch_timer_start))'''
+        print("Epoch Duration: %.3fs" % (epoch_timer_end - epoch_timer_start))
+        dist.barrier()
 
 
-    epochs = [i+1 for i in range(epoch_num)]
-    plt.plot(epochs, dataLoader.loss_vals, marker="o", label="Total Loss")
+    epochs = [i+1 for i in range(num_epoch)]
+    plt.plot(epochs, dataLoader.loss_vals, label="Total Loss")
     plt.legend()
     plt.xlabel("Number of Epoch")
     plt.savefig("total_loss.png")
     plt.clf()
-    plt.plot(epochs, dataLoader.test_acc, marker="o", label="Test Accuracy")
-    plt.plot(epochs, dataLoader.train_acc, marker="o", label="Train Accuracy")
+    plt.plot(epochs, dataLoader.test_acc, label="Test Accuracy")
+    plt.plot(epochs, dataLoader.train_acc, label="Train Accuracy")
     plt.legend()
     plt.xlabel("Number of Epoch")
     plt.savefig("accuracy.png")
@@ -204,7 +240,15 @@ def main(rank, world_size):
 
 
 if __name__ == '__main__':
-    world_size = torch.cuda.device_count()
+    # Make all random sequences on all computers the same.
+    np.random.seed(1)
+
+    world_size = 2
     print("Using", world_size, "GPUs")
-    mp.spawn(main, args=(world_size,), nprocs = world_size)
+
+    num_epoch = 50
+    dataLoader = DataLoader(num_epoch)
+
+    mp.spawn(main, args=(world_size, num_epoch, dataLoader), nprocs = world_size)
+
     #main()
