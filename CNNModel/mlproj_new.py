@@ -19,8 +19,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torchmetrics import Metric
 
-#dataset_loc = "../datasets/Sohas_weapon-Classification"
-dataset_loc = "../balanced_datasets"
+dataset_loc = "../datasets/Sohas_weapon-Classification"
+#dataset_loc = "../balanced_datasets"
 
 # https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
 def ddp_setup(rank, world_size):
@@ -147,16 +147,17 @@ class MetricLoss(Metric):
 
 def main(rank, world_size, num_epoch, dataLoader):
     ddp_setup(rank, world_size)
-    gpu_id = rank
+    device = rank
 
     metric = MetricLoss()
 
-    distributedDataLoader = DistributedDataLoader(dataLoader.trainsets, dataLoader.testsets, world_size, gpu_id)
+    distributedDataLoader = DistributedDataLoader(dataLoader.trainsets, dataLoader.testsets, world_size, device)
     
     net = Net()
     net.metric = metric
-    net.to(gpu_id)
-    net = DDP(net, device_ids=[gpu_id])
+    net.to(device)
+    net = DDP(net, device_ids=[device])
+    print(len(distributedDataLoader.trainLoader))
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
@@ -171,9 +172,10 @@ def main(rank, world_size, num_epoch, dataLoader):
 
         running_loss = 0.0
         for i, data in enumerate(distributedDataLoader.trainLoader, 0):
+            print(i)
             # get the inputs
             inputs, labels = data
-            inputs, labels = inputs.to(gpu_id), labels.to(gpu_id)
+            inputs, labels = inputs.to(device), labels.to(device)
             # zero the parameter gradients
             optimizer.zero_grad()
 
@@ -197,12 +199,12 @@ def main(rank, world_size, num_epoch, dataLoader):
 
         #print("Training Duration: %.3fs" % (train_timer_end - train_timer_start))
         train_acc_timer_start = time.perf_counter()
-        train_acc = testtrain_acc(distributedDataLoader.trainLoader, net, gpu_id)
+        train_acc = testtrain_acc(distributedDataLoader.trainLoader, net, device)
         train_acc_timer_end = time.perf_counter()
         #print("Training Accuracy Duration: %.3fs" % (train_acc_timer_end - train_acc_timer_start))
 
         test_acc_timer_start = time.perf_counter()
-        test_acc = testtrain_acc(distributedDataLoader.testLoader, net, gpu_id)
+        test_acc = testtrain_acc(distributedDataLoader.testLoader, net, device)
         test_acc_timer_end = time.perf_counter()
         #print("Testing Accuracy Duration: %.3fs" % (test_acc_timer_end - test_acc_timer_start))
 
@@ -245,6 +247,7 @@ if __name__ == '__main__':
     # Make all random sequences on all computers the same.
     np.random.seed(1)
 
+    #world_size = torch.cuda.device_count()
     world_size = 2
     print("Using", world_size, "GPUs")
 

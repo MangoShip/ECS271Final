@@ -13,8 +13,19 @@ from torchvision import transforms, datasets
 from torch.utils.data import DataLoader, Dataset
 import time
 import matplotlib.patches as patches
+import torch.distributed as dist
+
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 
 path_to_detection_dataset = "../datasets/Sohas_weapon-Detection/"
+
+# https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
+def ddp_setup(rank, world_size):
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    init_process_group(backend = "nccl", rank = rank, world_size = world_size)
 
 def generate_label(obj):
 
@@ -115,6 +126,7 @@ class MyDataset(Dataset):
     def __getitem__(self, idx):
         file_image = self.image_paths[idx]
         file_label = self.image_paths[idx].split(".")[-2] + '.xml'
+
         img_path = os.path.join(self.path, file_image)
         
         if 'test' in self.path:
@@ -137,136 +149,154 @@ class MyDataset(Dataset):
 
         return img, target
 
-random_transforms = [transforms.ColorJitter(), transforms.RandomRotation(degrees=20)]
+def main(rank, world_size, num_epochs):
 
-transform = transforms.Compose([
-                                transforms.CenterCrop(64),
-                                transforms.RandomHorizontalFlip(p=0.5),
-                                transforms.RandomApply(random_transforms, p=0.3),
-                                transforms.ToTensor(),
-                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    ddp_setup(rank, world_size)
+    device = rank
 
-dataset = MyDataset(path_to_detection_dataset+'images/')
-test_dataset = MyDataset(path_to_detection_dataset+'images_test/')
+    random_transforms = [transforms.ColorJitter(), transforms.RandomRotation(degrees=20)]
 
-data_loader = torch.utils.data.DataLoader(dataset, batch_size=4, collate_fn=collate_fn)
-test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=2, collate_fn=collate_fn)
+    transform = transforms.Compose([
+                                    transforms.CenterCrop(64),
+                                    transforms.RandomHorizontalFlip(p=0.5),
+                                    transforms.RandomApply(random_transforms, p=0.3),
+                                    transforms.ToTensor(),
+                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-retina = torchvision.models.detection.retinanet_resnet50_fpn(num_classes = 6, pretrained=False, pretrained_backbone = True)
+    dataset = MyDataset(path_to_detection_dataset+'split_images/'+str(rank)+'/')
+    test_dataset = MyDataset(path_to_detection_dataset+'split_images_test/'+str(rank)+'/')
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    data_loader = torch.utils.data.DataLoader(dataset, batch_size=4, collate_fn=collate_fn)
+    test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=2, collate_fn=collate_fn)
 
-num_epochs = 5
-retina.to(device)
-    
-# parameters
-params = [p for p in retina.parameters() if p.requires_grad] # select parameters that require gradient calculation
-optimizer = torch.optim.SGD(params, lr=0.001,
-                                momentum=0.9)
+    retina = torchvision.models.detection.retinanet_resnet50_fpn(num_classes = 6, pretrained=False, pretrained_backbone = True)
 
-len_dataloader = len(data_loader)
-
-# about 4 min per epoch on Colab GPU
-for epoch in range(num_epochs):
-    start = time.time()
-    retina.train()
-    print(epoch)
-
-    i = 0    
-    epoch_loss = 0
-    for images, targets in data_loader:
-        images = list(image.to(device) for image in images)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        loss_dict = retina(images, targets) 
-
-        losses = sum(loss for loss in loss_dict.values()) 
-
-        i += 1
-
-        optimizer.zero_grad()
-        losses.backward()
-        optimizer.step()
+    retina.to(device)
+    retina = DDP(retina, device_ids=[device])
         
-        epoch_loss += losses 
-    print(epoch_loss, f'time: {time.time() - start}')
+    # parameters
+    params = [p for p in retina.parameters() if p.requires_grad] # select parameters that require gradient calculation
+    optimizer = torch.optim.SGD(params, lr=0.001,
+                                    momentum=0.9)
 
-torch.save(retina.state_dict(),f'retina_{num_epochs}.pt')
-# Load the saved model
-# retina.load_state_dict(torch.load(f'retina_{num_epochs}.pt'))
-# device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-# retina.to(device)
+    len_dataloader = len(data_loader)
 
-def make_prediction(model, img, threshold):
-    model.eval()
-    preds = model(img)
-    for id in range(len(preds)) :
-        idx_list = []
+    # about 4 min per epoch on Colab GPU
+    for epoch in range(num_epochs):
+        start = time.time()
+        retina.train()
+        print(epoch)
 
-        for idx, score in enumerate(preds[id]['scores']) :
-            if score > threshold : #select idx which meets the threshold
-                idx_list.append(idx)
+        i = 0    
+        epoch_loss = 0
+        for images, targets in data_loader:
+            images = list(image.to(device) for image in images)
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        preds[id]['boxes'] = preds[id]['boxes'][idx_list]
-        preds[id]['labels'] = preds[id]['labels'][idx_list]
-        preds[id]['scores'] = preds[id]['scores'][idx_list]
+            loss_dict = retina(images, targets) 
+
+            losses = sum(loss for loss in loss_dict.values()) 
+
+            i += 1
+
+            optimizer.zero_grad()
+            losses.backward()
+            optimizer.step()
+            
+            epoch_loss += losses 
+        dist.barrier()
+        print(epoch_loss, f'time: {time.time() - start}')
+
+    torch.save(retina.state_dict(),f'retina_{num_epochs}.pt')
+    # Load the saved model
+    # retina.load_state_dict(torch.load(f'retina_{num_epochs}.pt'))
+    # device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    # retina.to(device)
+
+    def make_prediction(model, img, threshold):
+        model.eval()
+        preds = model(img)
+        for id in range(len(preds)) :
+            idx_list = []
+
+            for idx, score in enumerate(preds[id]['scores']) :
+                if score > threshold : #select idx which meets the threshold
+                    idx_list.append(idx)
+
+            preds[id]['boxes'] = preds[id]['boxes'][idx_list]
+            preds[id]['labels'] = preds[id]['labels'][idx_list]
+            preds[id]['scores'] = preds[id]['scores'][idx_list]
 
 
-    return preds
+        return preds
 
-from tqdm import tqdm
+    from tqdm import tqdm
 
-labels = []
-preds_adj_all = []
-annot_all = []
+    labels = []
+    preds_adj_all = []
+    annot_all = []
 
-for im, annot in tqdm(test_data_loader, position = 0, leave = True):
-    im = list(img.to(device) for img in im)
-    #annot = [{k: v.to(device) for k, v in t.items()} for t in annot]
+    for im, annot in tqdm(test_data_loader, position = 0, leave = True):
+        im = list(img.to(device) for img in im)
+        #annot = [{k: v.to(device) for k, v in t.items()} for t in annot]
 
-    for t in annot:
-        labels += t['labels']
+        for t in annot:
+            labels += t['labels']
 
-    with torch.no_grad():
-        preds_adj = make_prediction(retina, im, 0.5)
-        preds_adj = [{k: v.to(torch.device('cpu')) for k, v in t.items()} for t in preds_adj]
-        preds_adj_all.append(preds_adj)
-        annot_all.append(annot)
+        with torch.no_grad():
+            preds_adj = make_prediction(retina, im, 0.5)
+            preds_adj = [{k: v.to(torch.device('cpu')) for k, v in t.items()} for t in preds_adj]
+            preds_adj_all.append(preds_adj)
+            annot_all.append(annot)
 
-nrows = 8
-ncols = 2
-fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(ncols*4, nrows*4))
+    nrows = 8
+    ncols = 2
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(ncols*4, nrows*4))
 
-batch_i = 0
-for im, annot in test_data_loader:
-    pos = batch_i * 4 + 1
-    for sample_i in range(len(im)) :
-        
-        img, rects = plot_image_from_output(im[sample_i], annot[sample_i])
-        axes[(pos)//2, 1-((pos)%2)].imshow(img)
-        for rect in rects:
-            axes[(pos)//2, 1-((pos)%2)].add_patch(rect)
-        
-        img, rects = plot_image_from_output(im[sample_i], preds_adj_all[batch_i][sample_i])
-        axes[(pos)//2, 1-((pos+1)%2)].imshow(img)
-        for rect in rects:
-            axes[(pos)//2, 1-((pos+1)%2)].add_patch(rect)
+    batch_i = 0
+    for im, annot in test_data_loader:
+        pos = batch_i * 4 + 1
+        for sample_i in range(len(im)) :
+            
+            img, rects = plot_image_from_output(im[sample_i], annot[sample_i])
+            axes[(pos)//2, 1-((pos)%2)].imshow(img)
+            for rect in rects:
+                axes[(pos)//2, 1-((pos)%2)].add_patch(rect)
+            
+            img, rects = plot_image_from_output(im[sample_i], preds_adj_all[batch_i][sample_i])
+            axes[(pos)//2, 1-((pos+1)%2)].imshow(img)
+            for rect in rects:
+                axes[(pos)//2, 1-((pos+1)%2)].add_patch(rect)
 
-        pos += 2
+            pos += 2
 
-    batch_i += 1
-    if batch_i == 4:
-        break
+        batch_i += 1
+        if batch_i == 4:
+            break
 
-# remove xtick, ytick
-for idx, ax in enumerate(axes.flat):
-    ax.set_xticks([])
-    ax.set_yticks([])
+    # remove xtick, ytick
+    for idx, ax in enumerate(axes.flat):
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-colnames = ['True', 'Pred']
+    colnames = ['True', 'Pred']
 
-for idx, ax in enumerate(axes[0]):
-    ax.set_title(colnames[idx])
+    for idx, ax in enumerate(axes[0]):
+        ax.set_title(colnames[idx])
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.savefig("test.png")
+    plt.show()
+    destroy_process_group()
+
+if __name__ == '__main__':
+
+    #world_size = torch.cuda.device_count()
+    world_size = 2
+    print("Using", world_size, "GPUs")
+
+    num_epochs = 50
+
+    mp.spawn(main, args=(world_size, num_epochs), nprocs = world_size)
+
+    #main()
