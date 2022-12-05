@@ -1,0 +1,4 @@
+matplotlib==3.6.2
+numpy==1.23.5
+protobuf==4.21.10
+torch==1.13.0
