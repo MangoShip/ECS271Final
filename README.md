@@ -1,4 +1,11 @@
+# De-escalation and prevention of violent crimes through visual recognition of weapons
+This is a github repo for all the code and related files involved in our project. 
 
+
+Authors:
+- [@MangoShip](https://github.com/MangoShip/)
+- [@rohis06](https://github.com/rohis06)
+- [@gopuman](https://github.com/gopuman)
 
 
 
