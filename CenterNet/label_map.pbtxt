@@ -1,0 +1,29 @@
+item {
+    id: 1
+    name: 'billete'
+}
+
+item {
+    id: 2
+    name: 'knife'
+}
+
+item {
+    id: 3
+    name: 'monedero'
+}
+
+item {
+    id: 4
+    name: 'pistol'
+}
+
+item {
+    id: 5
+    name: 'smartphone'
+}
+
+item {
+    id: 6
+    name: 'tarjeta'
+}
