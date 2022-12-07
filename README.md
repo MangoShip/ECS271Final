@@ -25,3 +25,5 @@ Authors:
 - https://pytorch.org/tutorials/beginner/blitz/neural_networks_tutorial.html#sphx-glr-beginner-blitz-neural-networks-tutorial-py
 - https://github.com/pytorch/examples/blob/main/mnist/main.py
 - https://github.com/pytorch/examples/blob/main/imagenet/main.py
+- https://github.com/alankbi/detecto
+- https://github.com/WongKinYiu/yolov7
