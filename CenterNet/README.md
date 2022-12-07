@@ -1,7 +1,7 @@
 To run the centernet_model.ipynb create the following directory structure. 
 
 - The annotations directory requires the label map file. 
-- The images/train and images/test directories require the train and test images and xml files.
+- The images/train and images/test directories require the train and test images 
 
 training_demo/
 ├─ annotations/
